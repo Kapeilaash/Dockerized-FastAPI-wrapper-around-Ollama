@@ -5,7 +5,11 @@ import os
 
 app = FastAPI()
 
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+# ✅ Works both locally and Railway
+OLLAMA_URL = os.getenv(
+    "OLLAMA_URL",
+    "http://localhost:11434/api/generate"
+)
 
 
 class RequestModel(BaseModel):
@@ -15,13 +19,17 @@ class RequestModel(BaseModel):
 
 @app.post("/v1/chat/completions")
 async def generate(request: RequestModel):
-    payload = {"model": request.model, "prompt": request.prompt, "stream": False}
+    payload = {
+        "model": request.model,
+        "prompt": request.prompt,
+        "stream": False
+    }
 
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
             response = await client.post(OLLAMA_URL, json=payload)
 
-        # Ollama returns useful error text/json; surface it cleanly.
+        # Handle Ollama errors
         if response.status_code >= 400:
             return {
                 "error": "ollama_error",
@@ -30,19 +38,29 @@ async def generate(request: RequestModel):
             }
 
         return response.json()
+
     except httpx.ConnectError:
         return {
             "error": "ollama_unreachable",
-            "detail": f"Ollama is not reachable at {OLLAMA_URL}. Start Ollama (or docker compose), then retry.",
+            "detail": f"Cannot connect to Ollama at {OLLAMA_URL}"
         }
+
     except httpx.ReadTimeout:
         return {
             "error": "ollama_timeout",
-            "detail": "Ollama took too long to respond. Try a smaller prompt/model or retry.",
+            "detail": "Ollama took too long to respond"
         }
+
     except httpx.HTTPError as e:
-        return {"error": "ollama_http_error", "detail": str(e)}
+        return {
+            "error": "ollama_http_error",
+            "detail": str(e)
+        }
+
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}        
+    return {
+        "status": "ok",
+        "ollama_url": OLLAMA_URL
+    }
