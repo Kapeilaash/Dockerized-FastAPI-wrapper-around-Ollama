@@ -13,7 +13,9 @@ _default_ollama_url = (
     if os.getenv("RAILWAY_ENVIRONMENT_NAME") or os.getenv("RAILWAY_PROJECT_ID")
     else "http://127.0.0.1:11434/api/generate"
 )
-OLLAMA_URL = os.getenv("OLLAMA_URL", _default_ollama_url)
+OLLAMA_URL = (os.getenv("OLLAMA_URL", _default_ollama_url) or "").strip()
+if OLLAMA_URL and not OLLAMA_URL.startswith(("http://", "https://")):
+    OLLAMA_URL = f"http://{OLLAMA_URL.lstrip('/')}"
 
 
 class RequestModel(BaseModel):
