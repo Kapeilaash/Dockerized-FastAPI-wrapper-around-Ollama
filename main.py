@@ -8,7 +8,7 @@ app = FastAPI()
 # ✅ Works both locally and Railway
 OLLAMA_URL = os.getenv(
     "OLLAMA_URL",
-    "http://localhost:11434/api/generate"
+    "http://host.docker.internal:11434/api/generate"
 )
 
 
