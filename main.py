@@ -5,11 +5,15 @@ import os
 
 app = FastAPI()
 
-# ✅ Works both locally and Railway
-OLLAMA_URL = os.getenv(
-    "OLLAMA_URL",
-    "http://host.docker.internal:11434/api/generate"
+# Ollama endpoint.
+# - Local dev default: Ollama on same machine.
+# - Railway default: private networking to an `ollama` service in same project.
+_default_ollama_url = (
+    "http://ollama.railway.internal:11434/api/generate"
+    if os.getenv("RAILWAY_ENVIRONMENT_NAME") or os.getenv("RAILWAY_PROJECT_ID")
+    else "http://127.0.0.1:11434/api/generate"
 )
+OLLAMA_URL = os.getenv("OLLAMA_URL", _default_ollama_url)
 
 
 class RequestModel(BaseModel):
