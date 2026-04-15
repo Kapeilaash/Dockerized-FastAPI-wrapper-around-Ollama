@@ -1,9 +1,14 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from pydantic import BaseModel
 import httpx
 import os
+import time
+
+from usage_db import RequestLogRow, get_sqlite_path, init_db, log_request, usage_summary
 
 app = FastAPI()
+SQLITE_PATH = get_sqlite_path()
+init_db(SQLITE_PATH)
 
 # Ollama endpoint.
 # - Local dev default: Ollama on same machine.
@@ -24,7 +29,8 @@ class RequestModel(BaseModel):
 
 
 @app.post("/v1/chat/completions")
-async def generate(request: RequestModel):
+async def generate(request: RequestModel, http_request: Request):
+    http_request.state.model = request.model
     payload = {
         "model": request.model,
         "prompt": request.prompt,
@@ -32,7 +38,7 @@ async def generate(request: RequestModel):
     }
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(500.0)) as client:
             response = await client.post(OLLAMA_URL, json=payload)
 
         # Handle Ollama errors
@@ -46,18 +52,21 @@ async def generate(request: RequestModel):
         return response.json()
 
     except httpx.ConnectError:
+        http_request.state.error_type = "ollama_unreachable"
         return {
             "error": "ollama_unreachable",
             "detail": f"Cannot connect to Ollama at {OLLAMA_URL}"
         }
 
     except httpx.ReadTimeout:
+        http_request.state.error_type = "ollama_timeout"
         return {
             "error": "ollama_timeout",
             "detail": "Ollama took too long to respond"
         }
 
     except httpx.HTTPError as e:
+        http_request.state.error_type = "ollama_http_error"
         return {
             "error": "ollama_http_error",
             "detail": str(e)
@@ -70,3 +79,33 @@ def health():
         "status": "ok",
         "ollama_url": OLLAMA_URL
     }
+
+
+@app.middleware("http")
+async def usage_logger(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = int((time.perf_counter() - start) * 1000)
+
+    try:
+        log_request(
+            SQLITE_PATH,
+            RequestLogRow(
+                method=request.method,
+                path=request.url.path,
+                status_code=getattr(response, "status_code", 0) or 0,
+                duration_ms=duration_ms,
+                model=getattr(request.state, "model", None),
+                error_type=getattr(request.state, "error_type", None),
+            ),
+        )
+    except Exception:
+        # Never break the API if logging fails
+        pass
+
+    return response
+
+
+@app.get("/usage/summary")
+def get_usage_summary(since_seconds: int | None = None, limit_paths: int = 20):
+    return usage_summary(SQLITE_PATH, since_seconds=since_seconds, limit_paths=limit_paths)
