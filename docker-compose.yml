@@ -1,22 +1,26 @@
 version: "3.8"
 
 services:
+  ollama:
+    image: ollama/ollama
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: always
+
   fastapi:
     build: .
+    container_name: fastapi-app
     ports:
       - "8000:8000"
     depends_on:
       - ollama
     environment:
-      # Talk to Ollama container from inside docker network
       - OLLAMA_URL=http://ollama:11434/api/generate
-
-  ollama:
-    image: ollama/ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
+      - OLLAMA_TIMEOUT_SEC=600
+    restart: always
 
 volumes:
   ollama_data:
