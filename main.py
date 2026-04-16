@@ -1,8 +1,11 @@
-from fastapi import FastAPI, Request
-from pydantic import BaseModel
-import httpx
+import asyncio
 import os
 import time
+
+import httpx
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from usage_db import RequestLogRow, get_sqlite_path, init_db, log_request, usage_summary
 
@@ -22,6 +25,11 @@ OLLAMA_URL = (os.getenv("OLLAMA_URL", _default_ollama_url) or "").strip()
 if OLLAMA_URL and not OLLAMA_URL.startswith(("http://", "https://")):
     OLLAMA_URL = f"http://{OLLAMA_URL.lstrip('/')}"
 
+# Read/connect timeout for Ollama (seconds). Tune via env if Railway or the model is slow.
+OLLAMA_TIMEOUT_SEC = float(os.getenv("OLLAMA_TIMEOUT_SEC", "600"))
+# Total attempts on read timeout (first load of a model can exceed one timeout window).
+OLLAMA_MAX_ATTEMPTS = max(1, int(os.getenv("OLLAMA_MAX_ATTEMPTS", "2")))
+
 
 class RequestModel(BaseModel):
     prompt: str
@@ -37,40 +45,59 @@ async def generate(request: RequestModel, http_request: Request):
         "stream": False
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(500.0)) as client:
-            response = await client.post(OLLAMA_URL, json=payload)
+    timeout = httpx.Timeout(OLLAMA_TIMEOUT_SEC)
 
-        # Handle Ollama errors
-        if response.status_code >= 400:
-            return {
-                "error": "ollama_error",
-                "status_code": response.status_code,
-                "detail": response.text,
-            }
+    for attempt in range(OLLAMA_MAX_ATTEMPTS):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(OLLAMA_URL, json=payload)
 
-        return response.json()
+            if response.status_code >= 400:
+                return JSONResponse(
+                    status_code=502,
+                    content={
+                        "error": "ollama_error",
+                        "status_code": response.status_code,
+                        "detail": response.text,
+                    },
+                )
 
-    except httpx.ConnectError:
-        http_request.state.error_type = "ollama_unreachable"
-        return {
-            "error": "ollama_unreachable",
-            "detail": f"Cannot connect to Ollama at {OLLAMA_URL}"
-        }
+            return response.json()
 
-    except httpx.ReadTimeout:
-        http_request.state.error_type = "ollama_timeout"
-        return {
-            "error": "ollama_timeout",
-            "detail": "Ollama took too long to respond"
-        }
+        except httpx.ConnectError:
+            http_request.state.error_type = "ollama_unreachable"
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "ollama_unreachable",
+                    "detail": f"Cannot connect to Ollama at {OLLAMA_URL}",
+                },
+            )
 
-    except httpx.HTTPError as e:
-        http_request.state.error_type = "ollama_http_error"
-        return {
-            "error": "ollama_http_error",
-            "detail": str(e)
-        }
+        except httpx.ReadTimeout:
+            if attempt + 1 < OLLAMA_MAX_ATTEMPTS:
+                await asyncio.sleep(2)
+                continue
+            http_request.state.error_type = "ollama_timeout"
+            return JSONResponse(
+                status_code=504,
+                content={
+                    "error": "ollama_timeout",
+                    "detail": (
+                        "Ollama took too long to respond. "
+                        "Try OLLAMA_TIMEOUT_SEC, a smaller model, or more CPU/RAM on the Ollama service."
+                    ),
+                },
+            )
+
+        except httpx.HTTPError as e:
+            http_request.state.error_type = "ollama_http_error"
+            return JSONResponse(
+                status_code=502,
+                content={"error": "ollama_http_error", "detail": str(e)},
+            )
+
+    raise RuntimeError("unreachable: Ollama handler should return or raise")
 
 
 @app.get("/health")
