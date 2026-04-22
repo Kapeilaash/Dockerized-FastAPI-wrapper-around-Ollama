@@ -1,11 +1,13 @@
 import asyncio
+import base64
+import binascii
 import os
 import time
 
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from usage_db import RequestLogRow, get_sqlite_path, init_db, log_request, usage_summary
 
@@ -39,12 +41,72 @@ OLLAMA_MAX_ATTEMPTS = max(1, int(os.getenv("OLLAMA_MAX_ATTEMPTS", "2")))
 
 # 🔥 FORCE SAFE MODEL
 MODEL_NAME = "qwen2.5:0.5b"
+DEFAULT_TEMPERATURE = float(os.getenv("OLLAMA_TEMPERATURE", "0.2"))
 
 # -----------------------------
 # Request Schema
 # -----------------------------
 class RequestModel(BaseModel):
-    prompt: str
+    prompt: str | None = Field(default=None, description="Prompt text (JSON strings must escape newlines and quotes).")
+    prompt_b64: str | None = Field(
+        default=None,
+        description="Base64-encoded UTF-8 prompt (recommended for long multiline prompts).",
+    )
+    temperature: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Sampling temperature (0.0–1.0). If omitted, server default is used.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_prompt(self):
+        if (self.prompt is None or self.prompt == "") and (self.prompt_b64 is None or self.prompt_b64 == ""):
+            raise ValueError("Provide either 'prompt' or 'prompt_b64'.")
+        return self
+
+
+def _decode_prompt_b64(prompt_b64: str) -> str:
+    try:
+        raw = base64.b64decode(prompt_b64, validate=False)
+    except (binascii.Error, ValueError) as e:
+        raise ValueError(f"Invalid base64 in prompt_b64: {e}") from e
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise ValueError(f"prompt_b64 must decode to UTF-8 text: {e}") from e
+
+
+def _style_prefix_for_temperature(temperature: float) -> str:
+    """
+    Map temperature to a response style. This makes the *format/structure* change
+    predictably with temperature, instead of relying on randomness alone.
+    """
+    if temperature <= 0.2:
+        return (
+            "STYLE:\n"
+            "- Be concise and strict.\n"
+            "- Use minimal words.\n"
+            "- Do not add extra explanations or filler.\n"
+            "- If the user asked for a specific output format, output ONLY that.\n"
+            "\n"
+        )
+    if temperature <= 0.7:
+        return (
+            "STYLE:\n"
+            "- Normal level of detail.\n"
+            "- Be clear and helpful.\n"
+            "- If the user asked for a specific output format, output ONLY that.\n"
+            "\n"
+        )
+    return (
+        "STYLE:\n"
+        "- More detailed and structured.\n"
+        "- Use clear sections/bullets when appropriate.\n"
+        "- Still follow the user's required output format if specified.\n"
+        "- Avoid repeating the entire prompt.\n"
+        "\n"
+    )
 
 
 # -----------------------------
@@ -57,10 +119,17 @@ async def generate(request: RequestModel, http_request: Request):
     # Track model for logging
     http_request.state.model = MODEL_NAME
 
+    prompt = request.prompt if request.prompt is not None else _decode_prompt_b64(request.prompt_b64 or "")
+    temperature = DEFAULT_TEMPERATURE if request.temperature is None else float(request.temperature)
+    styled_prompt = _style_prefix_for_temperature(temperature) + prompt
+
     payload = {
         "model": MODEL_NAME,
-        "prompt": request.prompt,
-        "stream": False
+        "prompt": styled_prompt,
+        "stream": False,
+        "options": {
+            "temperature": temperature,
+        },
     }
 
     timeout = httpx.Timeout(OLLAMA_TIMEOUT_SEC)
