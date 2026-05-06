@@ -8,6 +8,8 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
+from fastapi.middleware.cors import CORSMiddleware
+
 
 from usage_db import RequestLogRow, get_sqlite_path, init_db, log_request, usage_summary
 
