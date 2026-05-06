@@ -6,10 +6,9 @@ import time
 
 import httpx
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
-from fastapi.middleware.cors import CORSMiddleware
-
 
 from usage_db import RequestLogRow, get_sqlite_path, init_db, log_request, usage_summary
 
@@ -17,6 +16,18 @@ from usage_db import RequestLogRow, get_sqlite_path, init_db, log_request, usage
 # App + DB Init
 # -----------------------------
 app = FastAPI()
+
+# ✅ CORS (required for browser-based Chat UI)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://sesaichatbot-dev-5f21.up.railway.app",
+        "http://localhost:5173",
+    ],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 SQLITE_PATH = get_sqlite_path()
 init_db(SQLITE_PATH)
@@ -49,7 +60,10 @@ DEFAULT_TEMPERATURE = float(os.getenv("OLLAMA_TEMPERATURE", "0.2"))
 # Request Schema
 # -----------------------------
 class RequestModel(BaseModel):
-    prompt: str | None = Field(default=None, description="Prompt text (JSON strings must escape newlines and quotes).")
+    prompt: str | None = Field(
+        default=None,
+        description="Prompt text (JSON strings must escape newlines and quotes).",
+    )
     prompt_b64: str | None = Field(
         default=None,
         description="Base64-encoded UTF-8 prompt (recommended for long multiline prompts).",
@@ -158,7 +172,7 @@ async def generate(request: RequestModel, http_request: Request):
             return {
                 "model": MODEL_NAME,
                 "response": data.get("response"),
-                "latency_ms": int((time.perf_counter() - start_time) * 1000)
+                "latency_ms": int((time.perf_counter() - start_time) * 1000),
             }
 
         except httpx.ConnectError:
@@ -181,7 +195,7 @@ async def generate(request: RequestModel, http_request: Request):
                 status_code=504,
                 content={
                     "error": "ollama_timeout",
-                    "detail": "Ollama took too long to respond."
+                    "detail": "Ollama took too long to respond.",
                 },
             )
 
@@ -203,7 +217,7 @@ def health():
     return {
         "status": "ok",
         "model": MODEL_NAME,
-        "ollama_url": OLLAMA_URL
+        "ollama_url": OLLAMA_URL,
     }
 
 
@@ -245,5 +259,5 @@ def get_usage_summary(since_seconds: int | None = None, limit_paths: int = 20):
     return usage_summary(
         SQLITE_PATH,
         since_seconds=since_seconds,
-        limit_paths=limit_paths
+        limit_paths=limit_paths,
     )
